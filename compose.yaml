@@ -6,6 +6,12 @@ services:
     expose:
       - "5672:5672"
     attach: false
+  # Wait for RabbitMQ to be joinable.
+  check-rabbit-started:
+    image: jwilder/dockerize:0.6.1
+    depends_on:
+      - rabbitmq
+    command: "dockerize -wait=tcp://rabbitmq:5672"
   autometrics:
     build:
       context: .
@@ -18,6 +24,9 @@ services:
     expose:
       - "9000:9000"
       - "9001:9001"
+    depends_on:
+      check-rabbit-started:
+        condition: service_completed_successfully
   batcher:
     build:
       context: .
@@ -25,8 +34,8 @@ services:
     environment:
       RABBITMQ_CONNECTION_STRING: amqp://rabbitmq:5672
     depends_on:
-      - rabbitmq
-      - autometrics
+      check-rabbit-started:
+        condition: service_completed_successfully
   worker:
     build:
       context: .
@@ -34,5 +43,5 @@ services:
     environment:
       RABBITMQ_CONNECTION_STRING: amqp://rabbitmq:5672
     depends_on:
-      - rabbitmq
-      - autometrics
+      check-rabbit-started:
+        condition: service_completed_successfully

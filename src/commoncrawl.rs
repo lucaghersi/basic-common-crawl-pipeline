@@ -1,9 +1,10 @@
 //! This module contains helper functions and structs for de-serializing CommonCrawl-specific data structures.
-use std::io::Read;
-
+use std::io::{Read, Write};
+use anyhow::Context;
 use autometrics::autometrics;
 use serde::{Deserialize, Serialize};
 use serde_aux::prelude::deserialize_number_from_string;
+use tracing::info;
 
 /// Metadata for a crawled URL.
 /// We use this metadata in the batcher to filter URLs before passing them on to the worker(s).
@@ -18,6 +19,33 @@ pub struct CdxMetadata {
     pub offset: usize,
     pub filename: String,
     pub languages: Option<String>,
+}
+
+#[autometrics]
+pub async fn download_and_store(url: &str, path: &str) -> anyhow::Result<()> {
+    use std::fs::{File};
+
+    let client = reqwest::Client::new();
+    let response = client.get(url).send().await?;
+
+    if response.status().is_success() {
+        info!("File {} downloaded successfully", url);
+
+        _ = create_path(path);
+        let mut file = File::create(path)?;
+        let content = response.bytes().await?;
+        file.write_all(&content).with_context(|| "Something went wrong downloading file")?;
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Failed to download file from {}", url))
+    }
+}
+
+fn create_path(path: &str) -> anyhow::Result<()>{
+    let path = std::path::Path::new(path);
+    let prefix = path.parent().unwrap();
+    std::fs::create_dir_all(prefix)?;
+    Ok(())
 }
 
 /// Downloads a given byte range from a URL and unzips the resulting data into a byte Vec.
@@ -37,7 +65,7 @@ pub async fn download_and_unzip(
     match res.status() {
         reqwest::StatusCode::PARTIAL_CONTENT => {
             let body = res.bytes().await?;
-            tracing::info!(
+            tracing::trace!(
                 "Successfully fetched the URL {} from {} to {}",
                 url,
                 offset,

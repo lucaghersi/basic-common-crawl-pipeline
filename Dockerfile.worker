@@ -5,7 +5,7 @@ FROM rust:bullseye AS builder
 RUN apt-get update
 RUN apt-get install -y python3 python3-pip
 RUN export PATH=$PATH:/usr/local/bin/python
-RUN pip3 install trafilatura
+RUN pip3 install --upgrade trafilatura pip lxml_html_clean
 RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
 
 # Set the working directory inside the container

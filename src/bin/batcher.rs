@@ -27,6 +27,7 @@
 //! Once the batcher has downloaded (parts of) an index file, it will filter out URLs that are not in English or that did not return a 200 HTTP status code, batch them into groups whose size has a constant upper limit and push the messages containing these URls into a RabbitMQ queue.
 use anyhow::{Context, Result};
 use clap::Parser;
+use pipeline::commoncrawl::{download_and_store, ClusterIdxEntry};
 use pipeline::{
     commoncrawl::{download_and_unzip, parse_cdx_line, parse_cluster_idx},
     rabbitmq::{
@@ -73,16 +74,10 @@ async fn run(args: Args) -> Result<()> {
         .await
         .with_context(|| "Looks like rabbit is not available.")?;
     let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME).await?;
+    
+    // build index structure for further processing
+    let idx = obtain_index(&args.cluster_idx_filename, &args.dataset).await?;
 
-    let idx_filename = args.cluster_idx_filename;
-    let idx = fs::read_to_string(&idx_filename)
-        .with_context(|| format!("Failed to read idx file from {}", idx_filename))?
-        .lines()
-        .filter_map(parse_cluster_idx)
-        .collect::<Vec<_>>();
-    
-    tracing::info!("{} index lines logged for processing", idx.len());
-    
     let mut num_cdx_chunks_processed = 0usize;
     for cdx_chunk in idx {
         print!(".");
@@ -90,8 +85,7 @@ async fn run(args: Args) -> Result<()> {
             download_and_unzip(
                 &format!(
                     "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
-                    args.dataset,
-                    cdx_chunk.cdx_filename
+                    args.dataset, cdx_chunk.cdx_filename
                 ),
                 cdx_chunk.cdx_offset,
                 cdx_chunk.cdx_length,
@@ -120,4 +114,28 @@ async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn obtain_index(index_file_name: &str, dataset_name: &str) -> Result<Vec<ClusterIdxEntry>> {
+    let index_file_path = format!("./data/{}", index_file_name);
+
+    // download file if not exists
+    if !fs::exists(&index_file_path).unwrap_or(false) {
+        tracing::info!("Index file missing in ./data folder. Downloading...");
+        let index_file_url = format!(
+            "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
+            dataset_name, index_file_name
+        );
+        download_and_store(&index_file_url, &index_file_path).await?;
+    }
+
+    let idx = fs::read_to_string(&index_file_path)
+        .with_context(|| format!("Failed to read idx file from {}", index_file_path))?
+        .lines()
+        .filter_map(parse_cluster_idx)
+        .collect::<Vec<_>>();
+
+    tracing::info!("{} index lines prepared for processing", idx.len());
+
+    Ok(idx)
 }
