@@ -121,11 +121,13 @@ async fn obtain_index(index_file_name: &str, dataset_name: &str) -> Result<Vec<C
 
     // download file if not exists
     if !fs::exists(&index_file_path).unwrap_or(false) {
+        
         tracing::info!("Index file missing in ./data folder. Downloading...");
         let index_file_url = format!(
             "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
             dataset_name, index_file_name
         );
+        
         download_and_store(&index_file_url, &index_file_path).await?;
     }
 

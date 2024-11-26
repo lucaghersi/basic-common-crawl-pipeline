@@ -1,5 +1,6 @@
 //! This module contains helper functions and structs for de-serializing CommonCrawl-specific data structures.
 use std::io::{Read, Write};
+use std::fs::{File};
 use anyhow::Context;
 use autometrics::autometrics;
 use serde::{Deserialize, Serialize};
@@ -23,21 +24,18 @@ pub struct CdxMetadata {
 
 #[autometrics]
 pub async fn download_and_store(url: &str, path: &str) -> anyhow::Result<()> {
-    use std::fs::{File};
-
-    let client = reqwest::Client::new();
-    let response = client.get(url).send().await?;
-
+    let response = reqwest::get(url).await?;
+    
     if response.status().is_success() {
         info!("File {} downloaded successfully", url);
 
         _ = create_path(path);
         let mut file = File::create(path)?;
         let content = response.bytes().await?;
-        file.write_all(&content).with_context(|| "Something went wrong downloading file")?;
+        file.write_all(&content).with_context(|| "Something went wrong storing file")?;
         Ok(())
     } else {
-        Err(anyhow::anyhow!("Failed to download file from {}", url))
+        Err(anyhow::anyhow!("Failed to download and store file from {}", url))
     }
 }
 
