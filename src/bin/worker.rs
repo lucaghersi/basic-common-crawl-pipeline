@@ -6,9 +6,13 @@
 //!
 //! In its current implementation it does not refine or filter the extracted text in any way nor does it output the extracted text to a file.
 
+use anyhow::Result;
 use autometrics::autometrics;
 use futures_util::StreamExt;
 use lapin::options::BasicAckOptions;
+use metrics::increment_counter;
+use pipeline::commoncrawl::CdxFileContext;
+use pipeline::rabbitmq::{publish_content, CC_QUEUE_NAME_STORE};
 use pipeline::{
     commoncrawl::{download_and_unzip, CdxEntry},
     rabbitmq::{
@@ -18,10 +22,6 @@ use pipeline::{
     trafilatura,
 };
 use warc::WarcHeader;
-use anyhow::Result;
-use metrics::increment_counter;
-use pipeline::commoncrawl::CdxFileContext;
-use pipeline::rabbitmq::{publish_content, CC_QUEUE_NAME_STORE};
 
 #[tokio::main]
 async fn main() {
@@ -37,16 +37,21 @@ async fn main() {
 
 async fn run(worker_name: &str) -> Result<()> {
     let rabbit_conn = rabbitmq_connection().await?;
-    let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_BATCHES).await?;
-    let (files_channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_STORE).await?;
+    let (channel, _queue) =
+        rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_BATCHES).await?;
+    let (files_channel, _queue) =
+        rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_STORE).await?;
     let mut consumer = rabbitmq_consumer(&channel, CC_QUEUE_NAME_BATCHES, worker_name).await?;
 
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
                 let batch = serde_json::from_slice::<Vec<CdxEntry>>(&delivery.data);
-                tracing::info!("{} - Received a batch of {} entries", worker_name,
-                    batch.as_ref().unwrap().len());
+                tracing::info!(
+                    "{} - Received a batch of {} entries",
+                    worker_name,
+                    batch.as_ref().unwrap().len()
+                );
 
                 for entry in batch? {
                     process_index_entry(entry, &files_channel).await?
@@ -66,9 +71,8 @@ async fn run(worker_name: &str) -> Result<()> {
 
 #[autometrics]
 async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Result<()> {
-
     let url = &format!("https://data.commoncrawl.org/{}", entry.metadata.filename);
-    let data = download_and_unzip(url, entry.metadata.offset, entry.metadata.length, ).await?;
+    let data = download_and_unzip(url, entry.metadata.offset, entry.metadata.length).await?;
 
     for warc_entry in warc::WarcReader::new(data.as_slice()).iter_records() {
         let warc_entry = warc_entry?;
@@ -77,7 +81,7 @@ async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Resul
             continue;
         }
 
-        let target_uri =warc_entry.header(WarcHeader::TargetURI).unwrap();
+        let target_uri = warc_entry.header(WarcHeader::TargetURI).unwrap();
         tracing::info!("Successfully read WARC entry with URL {}", target_uri);
 
         let raw_content = String::from_utf8_lossy(warc_entry.body());
@@ -87,28 +91,44 @@ async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Resul
     Ok(())
 }
 
-async fn extract_and_process_content(entry: &CdxEntry, raw_content: &str, channel: &lapin::Channel, target_uri: &str) -> Result<()> {
-
+async fn extract_and_process_content(
+    entry: &CdxEntry,
+    raw_content: &str,
+    channel: &lapin::Channel,
+    target_uri: &str,
+) -> Result<()> {
     let html_begin_index = raw_content.find("\n\n");
     let Some(html_begin_index) = html_begin_index else {
         // we ignore content that is not valid HTML
         tracing::debug!("Failed to find HTML content in WARC entry");
-        return Ok(())
+        return Ok(());
     };
 
-    tracing::debug!("First 1000 characters of raw content: {}", &raw_content[..1000]);
+    tracing::debug!(
+        "First 1000 characters of raw content: {}",
+        &raw_content[..1000]
+    );
     increment_counter!("worker_doc_processed");
 
     let content = trafilatura::extract(&raw_content[html_begin_index..])?;
 
     if let Some(content) = content {
-        tracing::info!("Extracted content of length {}", content.len());
+        let len = content.len();
+
         tracing::debug!("Extracted content: {}", &content);
+        
+        if !(500..=1000000).contains(&len) {
+            tracing::debug!("Extracted content of length {}, which is outside the allowed range", len);
+            return Ok(());
+        }
+        else {
+            tracing::info!("Content length is {}; content will be transmitted for further processing", len);
+        }
 
         let file_content_to_save = CdxFileContext {
             content: content,
             filename: entry.metadata.filename.clone(),
-            target_uri: target_uri.to_string()
+            target_uri: target_uri.to_string(),
         };
         let batch = [file_content_to_save];
 
