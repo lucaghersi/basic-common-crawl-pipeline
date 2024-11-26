@@ -10,7 +10,7 @@ use anyhow::Result;
 use autometrics::autometrics;
 use futures_util::StreamExt;
 use lapin::options::BasicAckOptions;
-use metrics::increment_counter;
+use metrics::{counter, increment_counter};
 use pipeline::commoncrawl::CdxFileContext;
 use pipeline::rabbitmq::{publish_content, CC_QUEUE_NAME_STORE};
 use pipeline::{
@@ -46,14 +46,19 @@ async fn run(worker_name: &str) -> Result<()> {
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
-                let batch = serde_json::from_slice::<Vec<CdxEntry>>(&delivery.data);
+                let batch = serde_json::from_slice::<Vec<CdxEntry>>(&delivery.data)?;
+                let batch_len =  batch.len();
+                
                 tracing::info!(
                     "{} - Received a batch of {} entries",
                     worker_name,
-                    batch.as_ref().unwrap().len()
+                    batch_len
                 );
+                
+                counter!("worker_received_batch_total", batch_len as u64);
+                increment_counter!("worker_received_batch_count");
 
-                for entry in batch? {
+                for entry in batch {
                     process_index_entry(entry, &files_channel).await?
                 }
 
@@ -73,6 +78,7 @@ async fn run(worker_name: &str) -> Result<()> {
 async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Result<()> {
     let url = &format!("https://data.commoncrawl.org/{}", entry.metadata.filename);
     let data = download_and_unzip(url, entry.metadata.offset, entry.metadata.length).await?;
+    counter!("worker_downloaded_data", data.len() as u64);
 
     for warc_entry in warc::WarcReader::new(data.as_slice()).iter_records() {
         let warc_entry = warc_entry?;
