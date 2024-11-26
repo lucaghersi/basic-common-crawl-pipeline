@@ -22,7 +22,6 @@ pub struct CdxMetadata {
     pub languages: Option<String>,
 }
 
-#[autometrics]
 pub async fn download_and_store(url: &str, path: &str) -> anyhow::Result<()> {
     let response = reqwest::get(url).await?;
     
@@ -80,6 +79,14 @@ pub async fn download_and_unzip(
             res.status()
         )),
     }
+}
+
+/// Represents a line in a cdx index file.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CdxFileContext {
+    pub filename: String,
+    pub content: String,
+    pub target_uri: String
 }
 
 /// Represents a line in a cdx index file.

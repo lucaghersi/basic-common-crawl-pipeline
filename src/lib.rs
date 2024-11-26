@@ -3,3 +3,4 @@ pub mod commoncrawl;
 pub mod rabbitmq;
 pub mod tracing_and_metrics;
 pub mod trafilatura;
+pub mod utility;

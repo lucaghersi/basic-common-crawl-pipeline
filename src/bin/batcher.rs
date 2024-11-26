@@ -25,17 +25,20 @@
 //! The URLs in the index files are sorted alpha-numerically.
 //!
 //! Once the batcher has downloaded (parts of) an index file, it will filter out URLs that are not in English or that did not return a 200 HTTP status code, batch them into groups whose size has a constant upper limit and push the messages containing these URls into a RabbitMQ queue.
+
 use anyhow::{Context, Result};
 use clap::Parser;
-use pipeline::commoncrawl::{download_and_store, ClusterIdxEntry};
+use pipeline::commoncrawl::{download_and_store, CdxEntry, ClusterIdxEntry};
 use pipeline::{
     commoncrawl::{download_and_unzip, parse_cdx_line, parse_cluster_idx},
     rabbitmq::{
-        publish_batch, rabbitmq_channel_with_queue, rabbitmq_connection, BATCH_SIZE, CC_QUEUE_NAME,
+        publish_batch, rabbitmq_channel_with_queue, rabbitmq_connection, BATCH_SIZE, CC_QUEUE_NAME_BATCHES,
     },
     tracing_and_metrics::{run_metrics_server, setup_tracing},
 };
 use std::fs;
+use autometrics::autometrics;
+use metrics::{counter, increment_counter};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -59,6 +62,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+
+    setup_tracing();
+    tokio::task::spawn(run_metrics_server(9000));
+    
     let run_result = run(Args::parse()).await;
     if let Err(e) = run_result {
         eprintln!("{e}");
@@ -67,51 +74,23 @@ async fn main() {
 }
 
 async fn run(args: Args) -> Result<()> {
-    setup_tracing();
-    tokio::task::spawn(run_metrics_server(9000));
-
+    
     let rabbit_conn = rabbitmq_connection()
         .await
         .with_context(|| "Looks like rabbit is not available.")?;
-    let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME).await?;
-    
+    let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_BATCHES).await?;
+
     // build index structure for further processing
     let idx = obtain_index(&args.cluster_idx_filename, &args.dataset).await?;
 
-    let mut num_cdx_chunks_processed = 0usize;
-    for cdx_chunk in idx {
-        print!(".");
-        let english_cdx_entries = String::from_utf8(
-            download_and_unzip(
-                &format!(
-                    "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
-                    args.dataset, cdx_chunk.cdx_filename
-                ),
-                cdx_chunk.cdx_offset,
-                cdx_chunk.cdx_length,
-            )
-            .await?,
-        )?
-        .lines()
-        .map(parse_cdx_line)
-        .filter(|e| {
-            if let Some(languages) = e.metadata.languages.as_ref() {
-                languages.contains("eng") && e.metadata.status == 200
-            } else {
-                false
-            }
-        })
-        .collect::<Vec<_>>();
-
-        for batch in english_cdx_entries.as_slice().chunks(BATCH_SIZE) {
-            publish_batch(&channel, CC_QUEUE_NAME, batch).await;
-        }
-        num_cdx_chunks_processed += 1;
-
-        if args.num_cdx_chunks_to_process as usize == num_cdx_chunks_processed {
-            break;
-        }
-    }
+    // process index
+    process_index(
+        &idx,
+        &args.dataset,
+        args.num_cdx_chunks_to_process as usize,
+        &channel,
+    )
+    .await?;
 
     Ok(())
 }
@@ -121,13 +100,12 @@ async fn obtain_index(index_file_name: &str, dataset_name: &str) -> Result<Vec<C
 
     // download file if not exists
     if !fs::exists(&index_file_path).unwrap_or(false) {
-        
         tracing::info!("Index file missing in ./data folder. Downloading...");
         let index_file_url = format!(
             "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
             dataset_name, index_file_name
         );
-        
+
         download_and_store(&index_file_url, &index_file_path).await?;
     }
 
@@ -140,4 +118,51 @@ async fn obtain_index(index_file_name: &str, dataset_name: &str) -> Result<Vec<C
     tracing::info!("{} index lines prepared for processing", idx.len());
 
     Ok(idx)
+}
+
+#[autometrics]
+async fn process_index(
+    idx: &Vec<ClusterIdxEntry>,
+    dataset: &str,
+    max_chunks_to_process: usize,
+    channel: &lapin::Channel,
+) -> Result<()> {
+    let mut num_cdx_chunks_processed = 0usize;
+    for cdx_chunk in idx {
+
+        let url = &format!(
+            "https://data.commoncrawl.org/cc-index/collections/{}/indexes/{}",
+            dataset, cdx_chunk.cdx_filename
+        );
+        
+        let content = download_and_unzip(url, cdx_chunk.cdx_offset, cdx_chunk.cdx_length, ).await?;
+        
+        let english_cdx_entries = String::from_utf8(content)?
+        .lines()
+        .map(parse_cdx_line)
+        .filter(select_only_english_cdx_entries)
+        .collect::<Vec<_>>();
+
+        for batch in english_cdx_entries.as_slice().chunks(BATCH_SIZE) {
+            counter!("index_chunks_processed", batch.len() as u64);
+            publish_batch(channel, CC_QUEUE_NAME_BATCHES, batch).await;
+        }
+        
+        num_cdx_chunks_processed += 1;
+
+        if max_chunks_to_process == num_cdx_chunks_processed {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn select_only_english_cdx_entries(e: &CdxEntry) -> bool {
+    if let Some(languages) = e.metadata.languages.as_ref() {
+        increment_counter!("batcher_cdx_entry_selected");
+        languages.contains("eng") && e.metadata.status == 200
+    } else {
+        false
+    }
 }

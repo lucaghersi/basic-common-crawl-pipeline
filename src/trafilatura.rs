@@ -1,6 +1,7 @@
 //! This module contains the Python and PyO3 code to be able to use trafilatura
 //! from Rust.
 
+use autometrics::autometrics;
 use once_cell::sync::Lazy;
 use pyo3::ffi::c_str;
 use pyo3::{
@@ -36,6 +37,7 @@ static PYTHON_EXTRACT_FUNCTION: Lazy<Py<PyAny>> = Lazy::new(|| {
 /// Extract text from `html` and return the extracted
 /// text as string if successful.
 /// Might return `Ok(None)` if text extraction was not successful.
+#[autometrics]
 pub fn extract(html: &str) -> Result<Option<String>, anyhow::Error> {
     Python::with_gil(move |py| -> Result<Option<String>, anyhow::Error> {
         PYTHON_EXTRACT_FUNCTION

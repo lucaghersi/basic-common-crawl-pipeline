@@ -11,7 +11,7 @@ services:
     image: jwilder/dockerize:0.6.1
     depends_on:
       - rabbitmq
-    command: "dockerize -wait=tcp://rabbitmq:5672"
+    command: "dockerize -wait=tcp://rabbitmq:5672 -timeout 30s"
   autometrics:
     build:
       context: .
@@ -19,20 +19,49 @@ services:
       args:
         - METRICS_ENDPOINT_1=http://batcher:9000
         - METRICS_ENDPOINT_2=http://worker:9001
+        - METRICS_ENDPOINT_3=http://saver:9002
     ports:
       - "6789:6789"
     expose:
       - "9000:9000"
       - "9001:9001"
+      - "9002:9002"
     depends_on:
       check-rabbit-started:
         condition: service_completed_successfully
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    command: server --address ":10000" --console-address "0.0.0.0:10001" /data1
+    expose:
+      - "10000:10000"
+    ports:
+      - "10001:10001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - /data1
+  # miniosetup:
+  #   image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+  #   depends_on:
+  #     check-rabbit-started:
+  #       condition: service_completed_successfully
+  #   entrypoint: >
+  #     /bin/sh -c "
+  #     /usr/bin/mc alias set myminio http://minio:10000 minioadmin minioadmin;
+  #     /usr/bin/mc mb myminio/worker;
+  #     /usr/bin/mc policy set public myminio/worker;
+  #     exit 0;
+  #     "
   batcher:
     build:
       context: .
       dockerfile: Dockerfile.batcher
     environment:
-      RABBITMQ_CONNECTION_STRING: amqp://rabbitmq:5672
+      - RABBITMQ_CONNECTION_STRING=amqp://rabbitmq:5672
+      - NUM_CHUNKS_TO_PROCESS=1
+    expose:
+      - "9000:9000"
     depends_on:
       check-rabbit-started:
         condition: service_completed_successfully
@@ -42,6 +71,23 @@ services:
       dockerfile: Dockerfile.worker
     environment:
       RABBITMQ_CONNECTION_STRING: amqp://rabbitmq:5672
+    expose:
+      - "9001:9001"
+    depends_on:
+      check-rabbit-started:
+        condition: service_completed_successfully
+  saver:
+    build:
+      context: .
+      dockerfile: Dockerfile.saver
+    environment:
+      RABBITMQ_CONNECTION_STRING: amqp://rabbitmq:5672
+      S3_SERVER: http://minio:10000
+      S3_BUCKET: worker
+      S3_SERVER_USER: minioadmin
+      S3_SERVER_PASSWORD: minioadmin
+    expose:
+      - "9002:9002"
     depends_on:
       check-rabbit-started:
         condition: service_completed_successfully

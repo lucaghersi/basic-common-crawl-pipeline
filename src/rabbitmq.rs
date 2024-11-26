@@ -8,10 +8,11 @@ use lapin::{
     BasicProperties, Channel, Connection, ConnectionProperties, Queue,
 };
 
-use crate::commoncrawl::CdxEntry;
+use crate::commoncrawl::{CdxEntry, CdxFileContext};
 
 pub const BATCH_SIZE: usize = 1000;
-pub const CC_QUEUE_NAME: &str = "batches";
+pub const CC_QUEUE_NAME_BATCHES: &str = "batches";
+pub const CC_QUEUE_NAME_STORE: &str = "stores";
 const RABBIT_MQ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Tries to get the environment variable `RABBITMQ_CONNECTION_STRING` and panics if not found.
@@ -119,3 +120,21 @@ pub async fn publish_batch(channel: &Channel, queue_name: &str, batch: &[CdxEntr
         .context("rabbitmq basic publish failed")
         .unwrap();
 }
+
+/// Publishes a batch to a given queue using default [BasicPublishOptions] and [BasicProperties].
+/// Panics in case of an error.
+pub async fn publish_content(channel: &Channel, queue_name: &str, batch: &[CdxFileContext]) {
+    tracing::info!("Sending a batch of {} entries", batch.len());
+    channel
+        .basic_publish(
+            "",
+            queue_name,
+            BasicPublishOptions::default(),
+            &serde_json::to_vec(&batch).unwrap(),
+            BasicProperties::default(),
+        )
+        .await
+        .context("rabbitmq file content publish failed")
+        .unwrap();
+}
+

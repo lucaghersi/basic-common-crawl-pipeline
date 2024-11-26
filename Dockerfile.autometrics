@@ -1,7 +1,8 @@
 # Use a Debian image
 FROM debian:bullseye
 ARG METRICS_ENDPOINT_1
-ARG METRICS_ENDPOINT_1
+ARG METRICS_ENDPOINT_2
+ARG METRICS_ENDPOINT_3
 
 # Set the working directory inside the container
 WORKDIR /usr/src/app
@@ -16,6 +17,7 @@ RUN chmod u+x ./am
 
 ENV METRICS_ENDPOINT_1=${METRICS_ENDPOINT_1}
 ENV METRICS_ENDPOINT_2=${METRICS_ENDPOINT_2}
+ENV METRICS_ENDPOINT_3=${METRICS_ENDPOINT_3}
 
 # Command to run the application
-CMD ./am start ${METRICS_ENDPOINT_1} ${METRICS_ENDPOINT_2}
+CMD ./am start --listen-address 0.0.0.0:6789 ${METRICS_ENDPOINT_1} ${METRICS_ENDPOINT_2} ${METRICS_ENDPOINT_3}
