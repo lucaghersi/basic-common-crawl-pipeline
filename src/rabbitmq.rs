@@ -123,14 +123,13 @@ pub async fn publish_batch(channel: &Channel, queue_name: &str, batch: &[CdxEntr
 
 /// Publishes a batch to a given queue using default [BasicPublishOptions] and [BasicProperties].
 /// Panics in case of an error.
-pub async fn publish_content(channel: &Channel, queue_name: &str, batch: &[CdxFileContext]) {
-    tracing::info!("Sending a batch of {} entries", batch.len());
+pub async fn publish_content(channel: &Channel, queue_name: &str, content: &CdxFileContext) {
     channel
         .basic_publish(
             "",
             queue_name,
             BasicPublishOptions::default(),
-            &serde_json::to_vec(&batch).unwrap(),
+            &serde_json::to_vec(&content).unwrap(),
             BasicProperties::default(),
         )
         .await

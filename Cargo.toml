@@ -24,6 +24,7 @@ warc = "0.3.3"
 metrics = "0.21.1"
 minio = "0.1.0"
 sha2 = "0.10.8"
+tokenizers = { version = "0.20.4", features = ["http"] }
 
 [dev-dependencies]
 tempfile = "3.14.0"

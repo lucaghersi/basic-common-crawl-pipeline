@@ -82,18 +82,19 @@ async fn run(file_processor_name: &str, args: Args) -> Result<()> {
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
-                let batch = serde_json::from_slice::<Vec<CdxFileContext>>(&delivery.data)?;
-                // we only send arrays with single items
-                let entry_item = batch.first();
+                let entry_item = serde_json::from_slice::<CdxFileContext>(&delivery.data);
+                if entry_item.is_err(){
+                    // item cannot be parsed, pushing it away
+                    tracing::warn!("Item cannot be parsed; rejected");
+                    delivery.nack(BasicNackOptions {multiple: false, requeue: false}).await?;
+                }
 
-                // if array is not empty, we proces the item
-                if let Some(entry) = entry_item {
-                    let upload_result =
-                        upload_file_to_minio(&client, &entry, &args.s3_bucket).await;
-                    if upload_result.is_err() {
-                        // negative-ack, with no requeue - it will not work, no matter what
-                        delivery.nack(BasicNackOptions {multiple: false, requeue: false}).await?;
-                    }
+                let entry = entry_item?;
+                let upload_result =
+                    upload_file_to_minio(&client, &entry, &args.s3_bucket).await;
+                if upload_result.is_err() {
+                    // negative-ack, with no requeue - it will not work, no matter what
+                    delivery.nack(BasicNackOptions {multiple: false, requeue: false}).await?;
                 }
 
                 // positive-ack

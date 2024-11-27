@@ -14,16 +14,16 @@ pub fn calculate_hash(to_be_hashed: &str) -> String {
 
 pub async fn upload_file_to_minio(client: &Client, entry: &CdxFileContext, s3_bucket: &str) -> anyhow::Result<()> {
     let file_name_hash = calculate_hash(&entry.filename);
-    let file_name = format!("{}/{}", &entry.filename, file_name_hash);
+    let file_name = format!("{}/{}.json", &entry.filename, file_name_hash);
 
     tracing::info!(
         "File content for uri {} received and ready for storage",
         file_name
     );
-
-    let mut bytes = entry.content.as_bytes();
-    let read: &mut dyn std::io::Read = &mut bytes;
-    let object_size = Some(entry.content.as_bytes().len());
+    
+    let bytes = &serde_json::to_vec(&entry)?;
+    let read: &mut dyn std::io::Read = &mut bytes.as_slice();
+    let object_size = Some(bytes.len());
 
     // prepare file loading
     let put_args = &mut PutObjectArgs::new(&s3_bucket, &file_name, read, object_size, None)?;

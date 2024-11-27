@@ -86,7 +86,8 @@ pub async fn download_and_unzip(
 pub struct CdxFileContext {
     pub filename: String,
     pub content: String,
-    pub target_uri: String
+    pub target_uri: String,
+    pub tokens: Vec<String>
 }
 
 /// Represents a line in a cdx index file.

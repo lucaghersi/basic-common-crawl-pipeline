@@ -11,6 +11,7 @@ use autometrics::autometrics;
 use futures_util::StreamExt;
 use lapin::options::BasicAckOptions;
 use metrics::{counter, increment_counter};
+use tokenizers::Tokenizer;
 use pipeline::commoncrawl::CdxFileContext;
 use pipeline::rabbitmq::{publish_content, CC_QUEUE_NAME_STORE};
 use pipeline::{
@@ -42,6 +43,7 @@ async fn run(worker_name: &str) -> Result<()> {
     let (files_channel, _queue) =
         rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_STORE).await?;
     let mut consumer = rabbitmq_consumer(&channel, CC_QUEUE_NAME_BATCHES, worker_name).await?;
+    let tokenizer = Tokenizer::from_pretrained("bert-base-cased", None).unwrap();
 
     while let Some(delivery) = consumer.next().await {
         match delivery {
@@ -59,7 +61,7 @@ async fn run(worker_name: &str) -> Result<()> {
                 increment_counter!("worker_received_batch_count");
 
                 for entry in batch {
-                    process_index_entry(entry, &files_channel).await?
+                    process_index_entry(entry, &files_channel, &tokenizer).await?
                 }
 
                 delivery.ack(BasicAckOptions::default()).await?;
@@ -75,7 +77,7 @@ async fn run(worker_name: &str) -> Result<()> {
 }
 
 #[autometrics]
-async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Result<()> {
+async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel, tokenizer: &Tokenizer) -> Result<()> {
     let url = &format!("https://data.commoncrawl.org/{}", entry.metadata.filename);
     let data = download_and_unzip(url, entry.metadata.offset, entry.metadata.length).await?;
     counter!("worker_downloaded_data", data.len() as u64);
@@ -91,7 +93,7 @@ async fn process_index_entry(entry: CdxEntry, channel: &lapin::Channel) -> Resul
         tracing::info!("Successfully read WARC entry with URL {}", target_uri);
 
         let raw_content = String::from_utf8_lossy(warc_entry.body());
-        extract_and_process_content(&entry, &raw_content, channel, &target_uri).await?
+        extract_and_process_content(&entry, &raw_content, channel, &target_uri, tokenizer).await?
     }
 
     Ok(())
@@ -102,6 +104,7 @@ async fn extract_and_process_content(
     raw_content: &str,
     channel: &lapin::Channel,
     target_uri: &str,
+    tokenizer: &Tokenizer
 ) -> Result<()> {
     let html_begin_index = raw_content.find("\n\n");
     let Some(html_begin_index) = html_begin_index else {
@@ -131,17 +134,24 @@ async fn extract_and_process_content(
             tracing::info!("Content length is {}; content will be transmitted for further processing", len);
         }
 
+        // tokenize
+        let tokens = tokenize(&content, tokenizer).unwrap_or(Vec::new());
         let file_content_to_save = CdxFileContext {
             content: content,
             filename: entry.metadata.filename.clone(),
             target_uri: target_uri.to_string(),
+            tokens: tokens
         };
-        let batch = [file_content_to_save];
-
-        publish_content(channel, CC_QUEUE_NAME_STORE, &batch).await;
+        publish_content(channel, CC_QUEUE_NAME_STORE, &file_content_to_save).await;
     } else {
         tracing::warn!("Failed to extract content from WARC entry");
     }
 
     Ok(())
+}
+
+fn tokenize(content: &str, tokenizer: &Tokenizer) -> Result<Vec<String>> {
+    let encoding = tokenizer.encode(content, false).unwrap();
+    let result = encoding.get_tokens();
+    Ok(result.to_vec())
 }
