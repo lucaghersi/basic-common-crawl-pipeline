@@ -6,25 +6,21 @@
 //!
 //! In its current implementation it does not refine or filter the extracted text in any way nor does it output the extracted text to a file.
 
-use futures_util::StreamExt;
-use lapin::options::BasicAckOptions;
-use pipeline::{
-    rabbitmq::{
-        rabbitmq_channel_with_queue, rabbitmq_connection, rabbitmq_consumer,
-    },
-    tracing_and_metrics::{run_metrics_server, setup_tracing}
-};
 use anyhow::{Context, Result};
 use clap::Parser;
-use metrics::increment_counter;
-use minio::s3::args::{BucketExistsArgs, MakeBucketArgs, PutObjectArgs};
-use minio::s3::client::ClientBuilder;
+use futures_util::StreamExt;
+use lapin::options::{BasicAckOptions, BasicNackOptions};
+use minio::s3::args::{BucketExistsArgs, MakeBucketArgs};
+use minio::s3::client::{ClientBuilder};
 use minio::s3::creds::StaticProvider;
 use minio::s3::http::BaseUrl;
-use minio::s3::utils::Multimap;
 use pipeline::commoncrawl::CdxFileContext;
 use pipeline::rabbitmq::CC_QUEUE_NAME_STORE;
-use pipeline::utility::calculate_hash;
+use pipeline::utility::{upload_file_to_minio};
+use pipeline::{
+    rabbitmq::{rabbitmq_channel_with_queue, rabbitmq_connection, rabbitmq_consumer},
+    tracing_and_metrics::{run_metrics_server, setup_tracing},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -55,14 +51,14 @@ async fn main() {
     }
 }
 async fn run(file_processor_name: &str, args: Args) -> Result<()> {
-    
     let rabbit_conn = rabbitmq_connection().await?;
     let (channel, _queue) = rabbitmq_channel_with_queue(&rabbit_conn, CC_QUEUE_NAME_STORE).await?;
-    let mut consumer = rabbitmq_consumer(&channel, CC_QUEUE_NAME_STORE, file_processor_name).await?;
-    
+    let mut consumer =
+        rabbitmq_consumer(&channel, CC_QUEUE_NAME_STORE, file_processor_name).await?;
+
     let base_url = args.s3_server.parse::<BaseUrl>()?;
     tracing::info!("Trying to connect to MinIO at: `{:?}`", base_url);
-    
+
     let static_provider = StaticProvider::new(&args.s3_bucket_user, &args.s3_bucket_password, None);
 
     let client = ClientBuilder::new(base_url.clone())
@@ -78,40 +74,29 @@ async fn run(file_processor_name: &str, args: Args) -> Result<()> {
 
     // Make 's3_bucket' bucket if not exist.
     if !exists {
-        client.make_bucket(&MakeBucketArgs::new(&args.s3_bucket)?).await?;
+        client
+            .make_bucket(&MakeBucketArgs::new(&args.s3_bucket)?)
+            .await?;
     }
-    
+
     while let Some(delivery) = consumer.next().await {
         match delivery {
             Ok(delivery) => {
-                
                 let batch = serde_json::from_slice::<Vec<CdxFileContext>>(&delivery.data)?;
+                // we only send arrays with single items
+                let entry_item = batch.first();
 
-                // here we expect a single entry
-                for entry in batch {
-                    let file_name_hash = calculate_hash(&entry.filename);
-                    let file_name = format!("{}/{}", &entry.filename, file_name_hash);
-                    
-                    tracing::info!("File content for uri {} received and ready for storage", file_name);
-
-                    let mut bytes = entry.content.as_bytes();
-                    let read: &mut dyn std::io::Read = &mut bytes;
-                    let object_size = Some(entry.content.as_bytes().len());
-
-                    // prepare file loading
-                    let put_args=  &mut PutObjectArgs::new(&args.s3_bucket,
-                                                           &file_name, read, object_size, None)?;
-                    // adding original url as metadata
-                    let mut map = Multimap::new();
-                    map.insert("x-original-url".to_string(), entry.filename.to_string());
-                    put_args.user_metadata = Some(&map);
-                    
-                    client.put_object(put_args).await?;
-
-                    tracing::info!("File `{}` uploaded successfully as object to bucket `{}`.", file_name, &args.s3_bucket);
-                    increment_counter!("saver_file_uploaded");
+                // if array is not empty, we proces the item
+                if let Some(entry) = entry_item {
+                    let upload_result =
+                        upload_file_to_minio(&client, &entry, &args.s3_bucket).await;
+                    if upload_result.is_err() {
+                        // negative-ack, with no requeue - it will not work, no matter what
+                        delivery.nack(BasicNackOptions {multiple: false, requeue: false}).await?;
+                    }
                 }
-                
+
+                // positive-ack
                 delivery.ack(BasicAckOptions::default()).await?;
             }
             Err(e) => {
