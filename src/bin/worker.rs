@@ -13,7 +13,7 @@ use lapin::options::BasicAckOptions;
 use metrics::{counter, increment_counter};
 use tokenizers::Tokenizer;
 use pipeline::commoncrawl::CdxFileContext;
-use pipeline::rabbitmq::{publish_content, CC_QUEUE_NAME_STORE};
+use pipeline::rabbitmq::{publish, CC_QUEUE_NAME_STORE};
 use pipeline::{
     commoncrawl::{download_and_unzip, CdxEntry},
     rabbitmq::{
@@ -142,7 +142,7 @@ async fn extract_and_process_content(
             target_uri: target_uri.to_string(),
             tokens: tokens
         };
-        publish_content(channel, CC_QUEUE_NAME_STORE, &file_content_to_save).await;
+        publish(channel, CC_QUEUE_NAME_STORE, &file_content_to_save).await?;
     } else {
         tracing::warn!("Failed to extract content from WARC entry");
     }

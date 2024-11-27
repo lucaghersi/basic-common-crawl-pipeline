@@ -32,7 +32,7 @@ use pipeline::commoncrawl::{download_and_store, CdxEntry, ClusterIdxEntry};
 use pipeline::{
     commoncrawl::{download_and_unzip, parse_cdx_line, parse_cluster_idx},
     rabbitmq::{
-        publish_batch, rabbitmq_channel_with_queue, rabbitmq_connection, BATCH_SIZE, CC_QUEUE_NAME_BATCHES,
+        publish, rabbitmq_channel_with_queue, rabbitmq_connection, BATCH_SIZE, CC_QUEUE_NAME_BATCHES,
     },
     tracing_and_metrics::{run_metrics_server, setup_tracing},
 };
@@ -145,7 +145,8 @@ async fn process_index(
 
         for batch in english_cdx_entries.as_slice().chunks(BATCH_SIZE) {
             counter!("index_chunks_processed", batch.len() as u64);
-            publish_batch(channel, CC_QUEUE_NAME_BATCHES, batch).await;
+            let batch = batch.to_vec();
+            publish(channel, CC_QUEUE_NAME_BATCHES, &batch).await?;
         }
         
         num_cdx_chunks_processed += 1;

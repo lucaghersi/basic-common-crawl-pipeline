@@ -2,13 +2,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use backon::{ExponentialBuilder, Retryable};
 use lapin::{
     options::{BasicConsumeOptions, BasicPublishOptions, BasicQosOptions, QueueDeclareOptions},
     types::FieldTable,
     BasicProperties, Channel, Connection, ConnectionProperties, Queue,
 };
-
-use crate::commoncrawl::{CdxEntry, CdxFileContext};
+use serde::Serialize;
 
 pub const BATCH_SIZE: usize = 1000;
 pub const CC_QUEUE_NAME_BATCHES: &str = "batches";
@@ -106,34 +106,20 @@ pub async fn rabbitmq_consumer(
 
 /// Publishes a batch to a given queue using default [BasicPublishOptions] and [BasicProperties].
 /// Panics in case of an error.
-pub async fn publish_batch(channel: &Channel, queue_name: &str, batch: &[CdxEntry]) {
-    tracing::info!("Sending a batch of {} entries", batch.len());
-    channel
-        .basic_publish(
-            "",
-            queue_name,
-            BasicPublishOptions::default(),
-            &serde_json::to_vec(&batch).unwrap(),
-            BasicProperties::default(),
-        )
-        .await
-        .context("rabbitmq basic publish failed")
-        .unwrap();
-}
+pub async fn publish<T: Serialize>(channel: &Channel, queue_name: &str, content: &T) -> Result<()> {
+    let serialized_content = &serde_json::to_vec(&content)
+        .with_context(||"Serialization to json failed")?;
 
-/// Publishes a batch to a given queue using default [BasicPublishOptions] and [BasicProperties].
-/// Panics in case of an error.
-pub async fn publish_content(channel: &Channel, queue_name: &str, content: &CdxFileContext) {
     channel
         .basic_publish(
             "",
             queue_name,
             BasicPublishOptions::default(),
-            &serde_json::to_vec(&content).unwrap(),
+            serialized_content,
             BasicProperties::default(),
         )
         .await
-        .context("rabbitmq file content publish failed")
-        .unwrap();
+        .context(format!("A failure happened publishing to RabbitMQ queue {}", queue_name))?;
+    Ok(())
 }
 
