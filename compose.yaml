@@ -40,19 +40,7 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
-      - /data1
-  # miniosetup:
-  #   image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-  #   depends_on:
-  #     check-rabbit-started:
-  #       condition: service_completed_successfully
-  #   entrypoint: >
-  #     /bin/sh -c "
-  #     /usr/bin/mc alias set myminio http://minio:10000 minioadmin minioadmin;
-  #     /usr/bin/mc mb myminio/worker;
-  #     /usr/bin/mc policy set public myminio/worker;
-  #     exit 0;
-  #     "
+      - minio-data:/data
   batcher:
     build:
       context: .
@@ -91,3 +79,6 @@ services:
     depends_on:
       check-rabbit-started:
         condition: service_completed_successfully
+
+volumes:
+  minio-data:

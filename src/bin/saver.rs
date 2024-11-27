@@ -23,6 +23,7 @@ use minio::s3::creds::StaticProvider;
 use minio::s3::http::BaseUrl;
 use pipeline::commoncrawl::CdxFileContext;
 use pipeline::rabbitmq::CC_QUEUE_NAME_STORE;
+use pipeline::utility::calculate_hash;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -85,9 +86,11 @@ async fn run(file_processor_name: &str, args: Args) -> Result<()> {
                 
                 let batch = serde_json::from_slice::<Vec<CdxFileContext>>(&delivery.data)?;
                 
+                // here we expect a single entry
                 for entry in batch {
-                    // TODO the filename is clearly not a good filename in this context; need to find something else
-                    let file_name = &entry.filename;
+                    let file_name_hash = calculate_hash(&entry.filename);
+                    let file_name = format!("{}/{}", &entry.filename, file_name_hash);
+                    
                     tracing::info!("File content for uri {} received and ready for storage", file_name);
 
                     let mut bytes = entry.content.as_bytes();
@@ -95,7 +98,7 @@ async fn run(file_processor_name: &str, args: Args) -> Result<()> {
                     let object_size = Some(entry.content.as_bytes().len());
                     
                     client.put_object(&mut PutObjectArgs::new(&args.s3_bucket,
-                                                              file_name, read, object_size, None).unwrap()).await?;
+                                                              &file_name, read, object_size, None).unwrap()).await?;
 
                     tracing::info!("File `{}` uploaded successfully as object to bucket `{}`.", file_name, &args.s3_bucket);
                     increment_counter!("saver_file_uploaded");
