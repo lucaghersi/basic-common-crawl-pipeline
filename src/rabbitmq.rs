@@ -2,7 +2,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use backon::{ExponentialBuilder, Retryable};
 use lapin::{
     options::{BasicConsumeOptions, BasicPublishOptions, BasicQosOptions, QueueDeclareOptions},
     types::FieldTable,
